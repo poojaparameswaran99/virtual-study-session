@@ -225,7 +225,6 @@ def team_meeting_team_lead_intermediate_prompt(
     team_lead: Agent, round_num: int, num_rounds: int
 ) -> str:
     """Generates the intermediate prompt for the team lead in a team meeting at the end of a round of discussion.
-
     :param team_lead: The team lead.
     :param round_num: The current round number.
     :param num_rounds: The total number of rounds.

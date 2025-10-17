@@ -1,10 +1,9 @@
-"""Runs a meeting with LLM agents using the Responses API."""
+"""Runs a meeting with LLM agents."""
 
 import time
 from pathlib import Path
-from typing import Literal, Optional
+from typing import Literal
 
-import openai
 from openai import OpenAI 
 from tqdm import trange, tqdm
 
@@ -33,22 +32,6 @@ from virtual_lab.utils import (
 )
 
 from pprint import pprint
-from uuid import uuid4
-import os, requests, json,time
-
-
-def post_response(payload: dict) -> dict:
-    r = requests.post(RESPONSES, headers=HEADERS, data=json.dumps(payload))
-    try:
-        r.raise_for_status()
-    except requests.HTTPError:
-        print('[response.create] status', r.status_code)
-        try:
-            print(json.dump(r.json(), indent=2))
-        except Exception:
-            print(r.text[:1000])
-        raise
-    return r.json()
 
 def run_meeting(
     meeting_type: Literal["team", "individual"],
@@ -66,11 +49,8 @@ def run_meeting(
     temperature: float = CONSISTENT_TEMPERATURE,
     pubmed_search: bool = False,
     return_summary: bool = False,
-    OVERALL_MODEL: str = 'gpt-5',
-    OVERALL_MINI_MODEL: str= 'gpt-5 mini',
-    conversation_id: Optional[str]=None
 ) -> str:
-    """Runs a meeting with LLM agents using the Responses API.
+    """Runs a meeting with a LLM agents.
 
     :param meeting_type: The type of meeting.
     :param agenda: The agenda for the meeting.
@@ -87,7 +67,7 @@ def run_meeting(
     :param temperature: The sampling temperature.
     :param pubmed_search: Whether to include a PubMed search tool.
     :param return_summary: Whether to return the summary of the meeting.
-    :return: The summary of the meeting if return_summary is True, else None.
+    :return: The summary of the meeting (i.e., the last message) if return_summary is True, else None.
     """
     # Validate meeting type
     if meeting_type == "team":
@@ -112,61 +92,54 @@ def run_meeting(
     # Start timing the meeting
     start_time = time.time()
 
-    ## start api call
-    API_KEY = os.getenv("OPENAI_API_KEY")
-    if not API_KEY:
-        raise RuntimeError("Please set OPENAI_API_KEY in your environment.")
-    BASE = "https://api.openai.com/v1"
-    RESPONSES = f"{BASE}/responses"
-    HEADERS = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-    }
+    # Set up client
+    client = OpenAI()
 
-    
-    # conv id 
-    # start conversation
-    if not conversation_id:
-        start_meeting = client.responses.create(model=OVERALL_MODEL,
-                                               input=agenda,
-                                               metadata={'conversation_id': conversation_id,
-                                                        })
-        print(dir(start_meeting), 'json', start_meeting.json, sep='\n')
-        conversation_id = start_meeting.conversation_id  # depending on SDK version
     # Set up team
     if meeting_type == "team":
         team = [team_lead] + list(team_members)
     else:
         team = [team_member] + [SCIENTIFIC_CRITIC]
+
     # Set up tools
     assistant_params = {"tools": [PUBMED_TOOL_DESCRIPTION]} if pubmed_search else {}
-            
+
     # Set up the assistants
     agent_to_assistant = {
-        agent: client.responses.create(
-            input=agent.prompt,
+        agent: client.beta.assistants.create(
+            name=agent.title,
+            instructions=agent.prompt,
             model=agent.model,
-            metadata={'conversation_id': conversation_id}
+            **assistant_params,
         )
         for agent in team
     }
 
-
+    agent_to_assistant = {
+        agent: client.responses.create(
+            input=agent.prompt,
+            model=agent.model,
+        )
+        for agent in team
+    }
+    
     # Map assistant IDs to agents
     assistant_id_to_title = {
         assistant.id: agent.title for agent, assistant in agent_to_assistant.items()
     }
-    
 
     # Set up tool token count
     tool_token_count = 0
 
+    # Set up the thread
+    thread = client.beta.threads.create()
+
+    # Initial prompt for team meeting
     if meeting_type == "team":
-        team_meeting = client.responses.create(
-            model=OVERALL_MODEL, ######## TRY MINI
-            conversation= conversation_id,
-            truncation='auto', ## with big model
-            input =team_meeting_start_prompt(
+        client.beta.threads.messages.create(
+            thread_id=thread.id,
+            role="user",
+            content=team_meeting_start_prompt(
                 team_lead=team_lead,
                 team_members=team_members,
                 agenda=agenda,
@@ -175,8 +148,8 @@ def run_meeting(
                 summaries=summaries,
                 contexts=contexts,
                 num_rounds=num_rounds,
-            ))
-
+            ),
+        )
 
     # Loop through rounds
     for round_index in trange(num_rounds + 1, desc="Rounds (+ Final Round)"):
@@ -229,40 +202,52 @@ def run_meeting(
                         prompt = individual_meeting_agent_prompt(
                             critic=SCIENTIFIC_CRITIC, agent=team_member
                         )
-            
-            # run agent
-            run = client.responses.create(
-                input=prompt,
-                model=OVERALL_MODEL,
-                previous_response_id=agent_to_assistant[agent].id,
-                metadata={'conversation_id': conversation_id}
-                )
-        
-            if run.status == 'requires_action':
-                print('a TOOL  is BEING USED, setup not completed for pubmed tool with gpt-5. This is'
-                     ' still on assistants api, so client.beta.threads.runs.submit_tool_outputs_and_poll')
-#                 tool_outputs = run_tools(run=run)
-                
-#                                 # Update tool token count
-#                 tool_token_count += sum(
-#                     count_tokens(tool_output["output"]) for tool_output in tool_outputs
-#                 )
-                
-#                                 # Submit the tool outputs
-#                 run = client.beta.threads.runs.submit_tool_outputs_and_poll(
-#                     thread_id=thread.id, run_id=run.id, tool_outputs=tool_outputs
-#                 )
 
-#                 # Add tool outputs to the thread so it's visible for later rounds
-#                 client.beta.threads.messages.create(
-#                     thread_id=thread.id,
-#                     role="user",
-#                     content="Tool Output:\n\n"
-#                     + "\n\n".join(
-#                         tool_output["output"] for tool_output in tool_outputs
-#                     ),
-#                 )
-        
+            # Create message from user to agent
+            client.beta.threads.messages.create(
+                thread_id=thread.id,
+                role="user",
+                content=prompt,
+            )
+
+            # Run the agent
+            run = client.beta.threads.runs.create_and_poll(
+                thread_id=thread.id,
+                assistant_id=agent_to_assistant[agent].id,
+                model=agent.model,
+                temperature=temperature,
+            )
+
+            # Check if run requires action
+            if run.status == "requires_action":
+                # Run the tools
+                tool_outputs = run_tools(run=run)
+
+                # Update tool token count
+                tool_token_count += sum(
+                    count_tokens(tool_output["output"]) for tool_output in tool_outputs
+                )
+
+                # Submit the tool outputs
+                run = client.beta.threads.runs.submit_tool_outputs_and_poll(
+                    thread_id=thread.id, run_id=run.id, tool_outputs=tool_outputs
+                )
+
+                # Add tool outputs to the thread so it's visible for later rounds
+                client.beta.threads.messages.create(
+                    thread_id=thread.id,
+                    role="user",
+                    content="Tool Output:\n\n"
+                    + "\n\n".join(
+                        tool_output["output"] for tool_output in tool_outputs
+                    ),
+                )
+
+            # Check run status
+#             if run.status != "completed":
+#                 print(dir(run))
+#                 raise ValueError(f"Run failed: {run.status}")
+
             if run.status != "completed":
                 print("[run] status:", getattr(run, "status", None))
                 print("[run] id:", getattr(run, "id", None))
@@ -296,9 +281,9 @@ def run_meeting(
             # If final round, only team lead or team member responds
             if round_index == num_rounds:
                 break
-    
+
     # Get messages from the discussion
-    messages = get_messages(client=client, conversation_id=conversation_id)
+    messages = get_messages(client=client, thread_id=thread.id)
 
     # Convert messages to discussion format
     discussion = convert_messages_to_discussion(
@@ -328,7 +313,4 @@ def run_meeting(
 
     # Optionally, return summary
     if return_summary:
-        return get_summary(discussion), conversation_id
-    return (), conversation_id
-
-
+        return get_summary(discussion)

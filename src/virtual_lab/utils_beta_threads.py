@@ -17,7 +17,7 @@ from virtual_lab.constants import (
     PUBMED_TOOL_NAME,
 )
 from virtual_lab.prompts import format_references
-
+import os, requests
 
 def get_pubmed_central_article(
     pmcid: str, abstract_only: bool = False
@@ -62,7 +62,7 @@ def get_pubmed_central_article(
     # Get abstract or full text of article (excluding references)
     if abstract_only:
         passages = [
-            passage
+            passag
             for passage in passages
             if passage["infons"]["section_type"] in ["ABSTRACT"]
         ]
@@ -92,8 +92,7 @@ def run_pubmed_search(
     """
     # Print search query
     print(
-        f"Searching PubMed Central for {num_articles} articles "
-        f"({'abstracts' if abstract_only else 'full text'}) with query: \"{query}\""
+        f'Searching PubMed Central for {num_articles} articles ({'abstracts' if abstract_only else 'full text'}) with query: "{query}"'
     )
 
     # Perform PubMed Central search for query to get PMC ID
@@ -170,7 +169,7 @@ def run_tools(run: Run) -> list[dict[str, str]]:
     return tool_outputs
 
 
-def get_messages(client: OpenAI, conversation_id: str) -> list[dict]:
+def get_messages(client: OpenAI, thread_id: str) -> list[dict]:
     """Gets messages from a thread.
 
     :param client: The OpenAI client.
@@ -181,7 +180,9 @@ def get_messages(client: OpenAI, conversation_id: str) -> list[dict]:
     messages = []
     last_message = None
     params = {
-        "metadata": {'conversation_id': conversation_id},
+        "thread_id": thread_id,
+        "limit": 100,
+        "order": "asc",
     }
 
     # Get all messages from the thread page by page
@@ -194,7 +195,7 @@ def get_messages(client: OpenAI, conversation_id: str) -> list[dict]:
 
         # Get messages
         new_messages = [
-            message.to_dict() for message in client.responses.create(**params)
+            message.to_dict() for message in client.beta.threads.messages.list(**params)
         ]
 
         # Append new messages
@@ -213,7 +214,7 @@ def get_messages(client: OpenAI, conversation_id: str) -> list[dict]:
     return messages
 
 
-async def async_get_messages(client: AsyncOpenAI, conversation_id: str) -> list[dict]:
+async def async_get_messages(client: AsyncOpenAI, thread_id: str) -> list[dict]:
     """Gets messages from a thread.
 
     :param client: The async OpenAI client.
@@ -224,11 +225,9 @@ async def async_get_messages(client: AsyncOpenAI, conversation_id: str) -> list[
     messages = []
     last_message = None
     params = {
-        "metadata": {'conversation_id': conversation_id},
+        "thread_id": thread_id,
         "limit": 100,
-        
         "order": "asc",
-        
     }
 
     # Get all messages from the thread page by page
@@ -242,7 +241,7 @@ async def async_get_messages(client: AsyncOpenAI, conversation_id: str) -> list[
         # Get messages
         new_messages = [
             message.to_dict()
-            async for message in client.responses.create(**params)
+            async for message in client.beta.threads.messages.list(**params)
         ]
 
         # Append new messages
@@ -387,68 +386,28 @@ def compute_finetuning_cost(
         token_count * FINETUNING_MODEL_TO_TRAINING_PRICE_PER_TOKEN[model] * num_epochs
     )
 
-## changed
+
 def convert_messages_to_discussion(
-    messages: list[dict],
-    assistant_id_to_title: dict[str, str],
+    messages: list[dict], assistant_id_to_title: dict[str, str]
 ) -> list[dict[str, str]]:
+    """Converts OpenAI messages into discussion format (list of message dictionaries).
+
+    :param messages: The messages to convert.
+    :param assistant_id_to_title: A dictionary mapping assistant IDs to titles.
+    :return: The discussion format (list of message dictionaries).
     """
-    Convert API conversation items (or similar) into your discussion format:
-    [{"agent": "<name>", "message": "<text>"}].
-    Tries multiple schemas safely.
-    """
+    return [
+        {
+            "agent": (
+                assistant_id_to_title[message["assistant_id"]]
+                if message["assistant_id"] is not None
+                else "User"
+            ),
+            "message": message["content"][0]["text"]["value"],
+        }
+        for message in messages
+    ]
 
-    def extract_text(msg: dict) -> str:
-        # Common Responses/Conversations item shape: list of parts with text.value
-        content = msg.get("content", [])
-        if isinstance(content, list) and content:
-            # find the first part that contains a text.value
-            for part in content:
-                if isinstance(part, dict):
-                    t = part.get("text")
-                    if isinstance(t, dict) and isinstance(t.get("value", None), str):
-                        return t["value"]
-        # Old/alternate shape: content[0]["text"]["value"]
-        try:
-            return msg["content"][0]["text"]["value"]
-        except Exception:
-            pass
-        # Plain string fallback
-        if isinstance(content, str):
-            return content
-        return ""
-
-    def resolve_agent(msg: dict) -> str:
-        # Prefer explicit assistant id if present and mapped
-        a_id = msg.get("assistant_id")
-        if a_id and a_id in assistant_id_to_title:
-            return assistant_id_to_title[a_id]
-
-        # Some Responses items carry response_id you mapped earlier
-        r_id = msg.get("response_id")
-        if r_id and r_id in assistant_id_to_title:
-            return assistant_id_to_title[r_id]
-
-        # Fall back to role-based naming
-        role = msg.get("role")
-        if role == "user":
-            return "User"
-        if role == "assistant":
-            return "Assistant"
-
-        # Final fallback
-        return "Assistant"
-
-    out = []
-    for m in messages:
-        # Only transform actual messages if you're passing raw items
-        if m.get("type") and m["type"] != "message":
-            continue
-        text = extract_text(m)
-        if not text:
-            continue
-        out.append({"agent": resolve_agent(m), "message": text})
-    return out
 
 def get_summary(discussion: list[dict[str, str]]) -> str:
     """Get the summary from a discussion.
@@ -494,5 +453,3 @@ def save_meeting(
     with open(save_dir / f"{save_name}.md", "w") as file:
         for turn in discussion:
             file.write(f"## {turn['agent']}\n\n{turn['message']}\n\n")
-
-
