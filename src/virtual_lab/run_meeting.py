@@ -37,15 +37,40 @@ from uuid import uuid4
 import os, requests, json,time
 
 
-def post_response(payload: dict) -> dict:
-    r = requests.post(RESPONSES, headers=HEADERS, data=json.dumps(payload))
+def create_conversation(payload):
+    w = f'https://api.openai.com/v1/conversations'
+    
+    HEADERS = {
+        "Authorization": f"Bearer {API_KEY}",
+        "Content-Type": "application/json",
+    }
+    r = requests.post(w, headers=headers, json=payload)
     try:
-        r.raise_for_status()
+         r.raise_for_status()
     except requests.HTTPError:
-        print('[response.create] status', r.status_code)
+        print('r.stats', r.status_code)
         try:
             print(json.dump(r.json(), indent=2))
         except Exception:
+            print(r.text[:1000])
+    return r.json()
+
+def post_response(payload: dict) -> dict:
+    BASE = 'https://api.openai.com/v1'
+    HEADERS = {
+    "Authorization": f"Bearer {API_KEY}",
+    "Content-Type": "application/json",
+    }
+    RESPONSES =  f'{BASE}/responses' 
+    r = requests.post(RESPONSES, headers=HEADERS, json=payload)
+    try:
+        r.raise_for_status()
+    except requests.HTTPError:
+        print('status: ', r.status_code)
+        try:
+            print(json.dump(r.json(), indent=2))
+        except Exception:
+            print('failed to do json dump')
             print(r.text[:1000])
         raise
     return r.json()
@@ -122,17 +147,19 @@ def run_meeting(
         "Authorization": f"Bearer {API_KEY}",
         "Content-Type": "application/json",
     }
-
     
-    # conv id 
+    payload = {'items': [{
+        "type": "message",
+        "role": "user",
+        "content": "Hello!"
+      }
+    ]}
+    
     # start conversation
     if not conversation_id:
-        start_meeting = client.responses.create(model=OVERALL_MODEL,
-                                               input=agenda,
-                                               metadata={'conversation_id': conversation_id,
-                                                        })
-        print(dir(start_meeting), 'json', start_meeting.json, sep='\n')
-        conversation_id = start_meeting.conversation_id  # depending on SDK version
+        conv_json = create_conversation(payload)
+        conversation_id = conv_json['id']  # depending on SDK version
+
     # Set up team
     if meeting_type == "team":
         team = [team_lead] + list(team_members)
@@ -140,16 +167,16 @@ def run_meeting(
         team = [team_member] + [SCIENTIFIC_CRITIC]
     # Set up tools
     assistant_params = {"tools": [PUBMED_TOOL_DESCRIPTION]} if pubmed_search else {}
-            
+    
     # Set up the assistants
-    agent_to_assistant = {
-        agent: client.responses.create(
-            input=agent.prompt,
-            model=agent.model,
-            metadata={'conversation_id': conversation_id}
-        )
-        for agent in team
-    }
+    agent_to_assistant = {}
+    for agent in team:
+        payload = {'input': agent.prompt,
+                  'model': agent.model,
+                  'conversation': conversation_id}
+        r_json = post_response(payload)
+        agent_to_assistant[agent] = r_json ## need to return the message only?
+    print('setting up agents: json::  ', r_json)
 
 
     # Map assistant IDs to agents
