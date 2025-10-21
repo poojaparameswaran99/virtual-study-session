@@ -30,6 +30,7 @@ from virtual_lab.utils import (
     print_cost_and_time,
     run_tools,
     save_meeting,
+    get_conversation_messages
 )
 
 from pprint import pprint
@@ -37,13 +38,16 @@ from uuid import uuid4
 import os, requests, json,time
 
 
-def create_conversation(payload):
+
+def create_conversation( headers):
     w = f'https://api.openai.com/v1/conversations'
-    
-    HEADERS = {
-        "Authorization": f"Bearer {API_KEY}",
-        "Content-Type": "application/json",
-    }
+    payload = {'items': [
+      {
+        "type": "message",
+        "role": "user",
+        "content": "Hello!"
+      }
+    ]}
     r = requests.post(w, headers=headers, json=payload)
     try:
          r.raise_for_status()
@@ -55,14 +59,12 @@ def create_conversation(payload):
             print(r.text[:1000])
     return r.json()
 
-def post_response(payload: dict) -> dict:
-    BASE = 'https://api.openai.com/v1'
-    HEADERS = {
-    "Authorization": f"Bearer {API_KEY}",
-    "Content-Type": "application/json",
-    }
+def post_response(payload: dict, BASE, HEADERS) -> dict:
     RESPONSES =  f'{BASE}/responses' 
-    r = requests.post(RESPONSES, headers=HEADERS, json=payload)
+    ## log probs is a param parameter.. 
+    params = {'include': ''}
+    r = requests.post(RESPONSES, headers=HEADERS,
+                  json=payload)
     try:
         r.raise_for_status()
     except requests.HTTPError:
@@ -73,7 +75,10 @@ def post_response(payload: dict) -> dict:
             print('failed to do json dump')
             print(r.text[:1000])
         raise
+#     print(r.json, '\n', r.json())
+#     print(dir(r))
     return r.json()
+
 
 def run_meeting(
     meeting_type: Literal["team", "individual"],
@@ -174,7 +179,7 @@ def run_meeting(
         payload = {'input': agent.prompt,
                   'model': agent.model,
                   'conversation': conversation_id}
-        r_json = post_response(payload)
+        r_json = post_response(payload, BASE=BASE, HEADERS=HEADERS)
         agent_to_assistant[agent] = r_json ## need to return the message only?
     print('setting up agents: json::  ', r_json)
 
@@ -189,11 +194,9 @@ def run_meeting(
     tool_token_count = 0
 
     if meeting_type == "team":
-        team_meeting = client.responses.create(
-            model=OVERALL_MODEL, ######## TRY MINI
-            conversation= conversation_id,
-            truncation='auto', ## with big model
-            input =team_meeting_start_prompt(
+        payload = {'model': OVERALL_MODEL,
+                   'conversation': conversation_id,
+                  'input' : team_meeting_start_prompt(
                 team_lead=team_lead,
                 team_members=team_members,
                 agenda=agenda,
@@ -202,8 +205,7 @@ def run_meeting(
                 summaries=summaries,
                 contexts=contexts,
                 num_rounds=num_rounds,
-            ))
-
+            )}
 
     # Loop through rounds
     for round_index in trange(num_rounds + 1, desc="Rounds (+ Final Round)"):
@@ -258,12 +260,11 @@ def run_meeting(
                         )
             
             # run agent
-            run = client.responses.create(
-                input=prompt,
-                model=OVERALL_MODEL,
-                previous_response_id=agent_to_assistant[agent].id,
-                metadata={'conversation_id': conversation_id}
-                )
+            payload = {'input': prompt,
+                      'model': OVERALL_MODEL,
+                      'previous_response_id': agent_to_assistant[agent].id,
+                      'conversation': conversation_id}
+            run = post_response(payload, BASE=BASE, HEADERS=HEADERS)
         
             if run.status == 'requires_action':
                 print('a TOOL  is BEING USED, setup not completed for pubmed tool with gpt-5. This is'
@@ -289,7 +290,7 @@ def run_meeting(
 #                         tool_output["output"] for tool_output in tool_outputs
 #                     ),
 #                 )
-        
+
             if run.status != "completed":
                 print("[run] status:", getattr(run, "status", None))
                 print("[run] id:", getattr(run, "id", None))
@@ -325,7 +326,7 @@ def run_meeting(
                 break
     
     # Get messages from the discussion
-    messages = get_messages(client=client, conversation_id=conversation_id)
+    messages = get_conversation_messages(conversation_id=conversation_id)
 
     # Convert messages to discussion format
     discussion = convert_messages_to_discussion(
