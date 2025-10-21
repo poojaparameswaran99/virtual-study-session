@@ -20,7 +20,7 @@ from virtual_lab.prompts import (
     team_meeting_team_lead_final_prompt,
     team_meeting_team_member_prompt,
 )
-from virtual_lab.utils import (
+from virtual_lab.utils_beta_threads import (
     convert_messages_to_discussion,
     count_discussion_tokens,
     count_tokens,
