@@ -6,8 +6,10 @@ from pathlib import Path
 
 import requests
 import tiktoken
+from openai import OpenAI
 from openai import AsyncOpenAI, OpenAI
 from openai.types.beta.threads.run import Run
+from typing import List, Dict, Optional
 
 from virtual_lab.constants import (
     DEFAULT_FINETUNING_EPOCHS,
@@ -169,6 +171,50 @@ def run_tools(run: Run) -> list[dict[str, str]]:
 
     return tool_outputs
 
+def get_conversation_messages(conversation_id, headers):
+    '''
+    attributes of returned api object
+    'apparent_encoding', 'close', 'connection', 'content', 'cookies', 'elapsed', 
+    'encoding', 'headers', 'history', 'is_permanent_redirect', 'is_redirect', 
+    'iter_content', 'iter_lines', 'json', 'links', 'next', 'ok', 'raise_for_status', 
+    'raw', 'reason', 'request', 'status_code', 'text', 'url'
+    '''
+    messages = []
+    last_message = None
+    w = f'https://api.openai.com/v1/conversations/{conversation_id}/items'
+    params = {'order': 'asc',
+#              'include': 'message.output_text.logprobs',
+             'limit': 100}
+    while True:
+        # Set up params (keep your logic)
+        if last_message is not None:
+            params["after"] = last_message["id"]
+        elif "after" in params:
+            del params["after"]
+        ## fetch ##
+        conv = requests.get(w, headers=headers,params=params)
+        conv.raise_for_status()
+
+        text = conv.text
+        data = json.loads(text).get('data', [])
+        new_messages = list(filter(lambda x: 'content' in x, data))
+
+        # Append new messages
+        messages += new_messages
+
+        # Break if no more messages
+        if len(new_messages) < params["limit"]:
+            break
+
+        # Get last message
+        
+        if new_messages:
+            last_message = messages[-1]
+    assert all(len(message["content"]) == 1 for message in messages)
+
+    return messages
+
+
 
 def get_messages(client: OpenAI, conversation_id: str) -> list[dict]:
     """Gets messages from a thread.
@@ -178,6 +224,7 @@ def get_messages(client: OpenAI, conversation_id: str) -> list[dict]:
     :return: A list of messages.
     """
     # Set up
+    
     messages = []
     last_message = None
     params = {
@@ -206,10 +253,13 @@ def get_messages(client: OpenAI, conversation_id: str) -> list[dict]:
 
         # Get last message
         last_message = messages[-1]
-
+    ## "content": [
+#   {"type": "input_text", "text": "What’s the weather?"},
+#   {"type": "output_text", "text": "It’s sunny in Boston."}
+# ]
     # Verify all message content is length 1
     assert all(len(message["content"]) == 1 for message in messages)
-
+        
     return messages
 
 
@@ -397,25 +447,41 @@ def convert_messages_to_discussion(
     [{"agent": "<name>", "message": "<text>"}].
     Tries multiple schemas safely.
     """
-
     def extract_text(msg: dict) -> str:
-        # Common Responses/Conversations item shape: list of parts with text.value
+        """
+        Works with Conversations/Responses items where content is a list of parts.
+        Collects text from input/output parts and joins with newlines.
+        Handles both string `text` and dict `text={"value": ...}`.
+        """
         content = msg.get("content", [])
+
+        # Primary path: list of parts
         if isinstance(content, list) and content:
-            # find the first part that contains a text.value
+            texts = []
             for part in content:
-                if isinstance(part, dict):
-                    t = part.get("text")
-                    if isinstance(t, dict) and isinstance(t.get("value", None), str):
-                        return t["value"]
-        # Old/alternate shape: content[0]["text"]["value"]
+                if not isinstance(part, dict):
+                    continue
+                if part.get("type") in ("input_text", "output_text"):
+                    txt = part.get("text")
+                    if isinstance(txt, str):
+                        texts.append(txt)
+                    elif isinstance(txt, dict) and isinstance(txt.get("value"), str):
+                        texts.append(txt["value"])
+            if texts:
+                return "\n".join(texts)
+
+        # Legacy fallback: content[0]["text"]["value"]
         try:
-            return msg["content"][0]["text"]["value"]
+            val = msg["content"][0]["text"]["value"]
+            if isinstance(val, str):
+                return val
         except Exception:
             pass
-        # Plain string fallback
+
+        # If content itself is a string
         if isinstance(content, str):
             return content
+
         return ""
 
     def resolve_agent(msg: dict) -> str:
@@ -438,16 +504,23 @@ def convert_messages_to_discussion(
 
         # Final fallback
         return "Assistant"
+     def _text(m: dict) -> str:
+            return extract_text(m)
 
-    out = []
-    for m in messages:
-        # Only transform actual messages if you're passing raw items
-        if m.get("type") and m["type"] != "message":
-            continue
-        text = extract_text(m)
-        if not text:
-            continue
-        out.append({"agent": resolve_agent(m), "message": text})
+    def _agent(m: dict) -> str:
+        return resolve_agent(m)
+
+    return [{"agent": _agent(m), "message": _text(m)} for m in messages]
+
+#     out = []
+#     for m in messages:
+#         # Only transform actual messages if you're passing raw items
+#         if m.get("type") and m["type"] != "message":
+#             continue
+#         text = extract_text(m)
+#         if not text:
+#             continue
+#         out.append({"agent": resolve_agent(m), "message": text})
     return out
 
 def get_summary(discussion: list[dict[str, str]]) -> str:
