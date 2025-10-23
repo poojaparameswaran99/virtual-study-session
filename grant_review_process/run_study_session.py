@@ -1,9 +1,6 @@
 #!/usr/bin/env python
 # coding: utf-8
 
-# In[1]:
-
-
 import concurrent.futures
 import json
 from pathlib import Path
@@ -14,7 +11,7 @@ from virtual_lab.prompts import (
     REWRITE_PROMPT,
     create_merge_prompt,
 )
-from virtual_lab.run_meeting import run_meeting
+
 from virtual_lab.utils import load_summaries
 
 from review_constants import (
@@ -35,7 +32,8 @@ from review_constants import (
     grant_scoring_form,
     nih_score_anchors,
     GRANTNAME,
-    reviewer_criteria
+    reviewer_criteria,
+    my_grant
 )
 
 ## my imports
@@ -45,62 +43,33 @@ import sys
 import re
 from io import StringIO
 
+if '5' in model:
+    from virtual_lab.run_meeting import run_meeting
+else:
+    from virtual_lab.run_meeting_original_assistantAPI import run_meeting
+
+print('RUNNING ON MODEL: ', model)
+ 
 os.environ["TQDM_DISABLE"] = "1"
-# Each aim evalauted indepdenently, in 
 
-# In[2]:
-
-
-### Evaluate each aim independently
-## Target questions to each aim specifically.
-
-
-# In[3]:
-
-
-my_grant = StringIO(open('/hpc/group/soderlinglab/tools/virtual-study-session/data/iLTP_grant_final.txt').read()).getvalue()
-
-## specify grantname
-GRANTNAME='iltp'
 # form_requirements = StringIO(open('/hpc/group/soderlinglab/tools/virtual-study-session/data/toy/form.txt').read()).getvalue()
 print('mygrant', my_grant[:100])
-
-
-# In[4]:
-
 
 s = 'this is my test string. will bibliography: be matched\nafter? let us check right'
 keyword = r'references'
 bibliography = re.search(fr'{keyword}(.*)', my_grant,flags=re.S | re.I).group(1)
 
-
-# In[5]:
-
-
 ORCID_number = '0000-0002-7599-1430'
 study_section_chair.expertise += ORCID_number
-
-
-# In[6]:
-
 
 ## search for aims
 result = re.search(r'^(.*?)RESEARCH STRATEGY', my_grant, re.DOTALL | re.IGNORECASE).group(1)
 aims = ','.join(sorted(list(set(re.findall(r'Aim\s*(\d)', result)))))
-aims
-
-
-# In[7]:
-
-
-study_section_chair.expertise
 
 
 # ## Team selection
 # #### technicalities
 # - Chair talks to the reviewer 1,2,3; individual reviews return to chair, then looped into reviewer 4 and 5
-
-# In[8]:
 
 
 # Team selection - prompts
@@ -131,73 +100,18 @@ Agent(
 )
 """
 
-
-# ```def run_meeting(
-#     meeting_type: Literal["team", "individual"],
-#     agenda: str,
-#     save_dir: Path,
-#     save_name: str = "discussion",
-#     team_lead: Agent | None = None,
-#     team_members: tuple[Agent, ...] | None = None,
-#     team_member: Agent | None = None,
-#     agenda_questions: tuple[str, ...] = (),
-#     agenda_rules: tuple[str, ...] = (),
-#     summaries: tuple[str, ...] = (),
-#     contexts: tuple[str, ...] = (),
-#     num_rounds: int = 0,
-#     temperature: float = CONSISTENT_TEMPERATURE,
-#     pubmed_search: bool = False,
-#     return_summary: bool = False,
-# ) -> str:
-#     """Runs a meeting with a LLM agents.
-# 
-#     :param meeting_type: The type of meeting.
-#     :param agenda: The agenda for the meeting.
-#     :param save_dir: The directory to save the discussion.
-#     :param save_name: The name of the discussion file that will be saved.
-#     :param team_lead: The team lead for a team meeting (None for individual meeting).
-#     :param team_members: The team members for a team meeting (None for individual meeting).
-#     :param team_member: The team member for an individual meeting (None for team meeting).
-#     :param agenda_questions: The agenda questions to answer by the end of the meeting.
-#     :param agenda_rules: The rules for the meeting.
-#     :param summaries: The summaries of previous meetings.
-#     :param contexts: The contexts for the meeting.
-#     :param num_rounds: The number of rounds of discussion.
-#     :param temperature: The sampling temperature.
-#     :param pubmed_search: Whether to include a PubMed search tool.
-#     :param return_summary: Whether to return the summary of the meeting.
-#     :return: The summary of the meeting (i.e., the last message) if return_summary is True, else None.
-#     """
-#     ```
-
-# In[9]:
-
-
 # Team selection - discussion
-with concurrent.futures.ThreadPoolExecutor() as executor:
-    concurrent.futures.wait([
-        executor.submit(
-            run_meeting,
-            meeting_type="individual",
-            team_member=study_section_chair,
-            agenda=team_selection_agenda,
-            save_dir=discussions_phase_to_dir["team_selection"] ,
-            save_name=f"discussion_{iteration_num + 1}",
-            temperature=CREATIVE_TEMPERATURE,
-            pubmed_search=True,
-            contexts=(f'my_grant: {my_grant}',),
-        ) for iteration_num in range(2) # num_iterations
-    ])
-
-
-# In[10]:
-
-
-list(discussions_phase_to_dir["team_selection"].glob("discussion_*.json"))
-
-
-# In[11]:
-
+for iteration_num in range(num_iterations):
+    run_meeting(
+    meeting_type="individual",
+    team_member=study_section_chair,
+    agenda=team_selection_agenda,
+    save_dir=discussions_phase_to_dir["team_selection"] ,
+    save_name=f"discussion_{iteration_num + 1}",
+    temperature=CREATIVE_TEMPERATURE,
+    pubmed_search=True,
+    contexts=(f'my_grant: {my_grant}',),
+)
 
 # Team selection - merge
 team_selection_summaries = load_summaries(
@@ -206,7 +120,6 @@ print(f"Number of summaries: {len(team_selection_summaries)}")
 
 team_selection_merge_prompt = create_merge_prompt(agenda=team_selection_agenda)
 
-study_section_chair.model = model_mini
 run_meeting(
     meeting_type="individual",
     team_member=study_section_chair,
@@ -215,24 +128,46 @@ run_meeting(
     save_dir=discussions_phase_to_dir["team_selection"],
     save_name="merged",
     temperature=CONSISTENT_TEMPERATURE,
-    contexts=(f'My grant: {my_grant}',),
-    pubmed_search=True
+    contexts=(f'Full text: {my_grant}',),
 )
-print(team_selection_summaries[-1])
+
+## update team members
+team_members_selection_file = Path(discussions_phase_to_dir['team_selection']) / 'merged.md'
+with open(team_members_selection_file, 'r', encoding='utf-8') as f:
+    content = f.read()
+
+header_pattern = (
+    r"Reviewer:(.*?)"
+    r"Domain expertise:(.*?)"        # capture domain section
+    r"Focus across aims:(.*?)"       # capture focus section
+    r"Policy/rigor checks:(.*?)"     # capture policy section
+    r"Immediate requests to PI:(.*?)" # capture requests section
+    )
+
+## get primary reviewer information + last match
+primaryR_pattern = r'(Primary Reviewer.*?)Secondary Reviewer'
+pr_match = re.findall(primaryR_pattern, content, flags=re.DOTALL)[-1]
+prHM = re.search(header_pattern, pr_match, flags=re.DOTALL | re.IGNORECASE)
+if prHM:
+    expertise = prHM.group(1).strip()
+    role = prHM.group(2).strip()
+    focus = prHM.group(3).strip()
+    policy = prHM.group(4).strip()
+    requests = prHM.group(5).strip()
+
+# update Primary expertise 
+primary_reviewer.expertise += expertise
+primary_reviewer.role += re.sub(r'[-\s+]', ' ', role)
+primary_reviewer.goal += focus + policy +requests
 
 
-# In[12]:
+secondary_reviewer.expertise += 'Molecular and Cellular Biochemistry Specialist'
+tertiary_reviewer.expertise += 'Computational Biology and AI Integration Specialist'
 
 
-## update team members 
 print('Primary Reviewer: ', primary_reviewer.expertise)
 print('Secondary Reviewer: ', secondary_reviewer.expertise)
 print('Tertiary Reviewer: ', tertiary_reviewer.expertise)
-
-# update expertise 
-primary_reviewer.expertise += 'Neurobiology and Synaptic Plasticity Expert'
-secondary_reviewer.expertise += 'Molecular and Cellular Biochemistry Specialist'
-tertiary_reviewer.expertise += 'Computational Biology and AI Integration Specialist'
 
 
 ## update roles
@@ -263,29 +198,20 @@ fill_out_form= (f'1. Please fill out the bracketed [] areas in the following tem
                f'2. Please provide a score for each factor in each aim!')
 
 
-scientific_critic.model = model_mini 
-for r in reviewers:
-    r.model = model_mini
-
-print('######## SC & reviewers on mini model!!! ####### ')
-
 for i, r in enumerate(reviewers):
     for iteration_num in range(num_iterations):
-#     with concurrent.futures.ThreadPoolExecutor() as executor:
-#         concurrent.futures.wait([
-#             executor.submit(
-            run_meeting(
-                meeting_type="team",
-                team_lead=r,  # PI resolves/merges
-                team_members = (scientific_critic, reviewers[i+1 if i != len(reviewers)-1 else 0]),
-                agenda = reviewer_criteria,
-                agenda_questions = fill_out_form,
-                save_dir=discussions_phase_to_dir["independent_review"],
-                save_name=f"reviewer{i+1}_iter{iteration_num+1}", #            save_name=f"discussion_{iteration_num + 1}",
-            #     pubmed_search = True,
-                temperature=CONSISTENT_TEMPERATURE,
-                num_rounds=num_rounds,
-                contexts=(f'my_grant: {my_grant}',))
+        run_meeting(
+            meeting_type="team",
+            team_lead=r,  # PI resolves/merges
+            team_members = (scientific_critic, reviewers[i+1 if i != len(reviewers)-1 else 0]),
+            agenda = reviewer_criteria,
+            agenda_questions = fill_out_form,
+            save_dir=discussions_phase_to_dir["independent_review"],
+            save_name=f"reviewer{i+1}_iter{iteration_num+1}", #            save_name=f"discussion_{iteration_num + 1}",
+        #     pubmed_search = True,
+            temperature=CONSISTENT_TEMPERATURE,
+            num_rounds=num_rounds,
+            contexts=(f'full text/propposal: : {my_grant}',))
 
 
 print('######## finished independent review selection!!!! ####### ')
@@ -318,9 +244,6 @@ independent_summaries  = load_summaries(
     discussion_paths=list(discussions_phase_to_dir["independent_review"].glob("reviewer*.json")))
 print(f"Number of independent summaries: {len(independent_summaries)}")
 
-# with concurrent.futures.ThreadPoolExecutor() as executor:
-#     concurrent.futures.wait([
-#         executor.submit(
 
 print('######## finished independent summary selection!!!! ####### ')
 
@@ -356,29 +279,27 @@ final_output_questions = ('Provide an executive summary of the discussion',
                          'Provide detailed advice on how each aim could be improved based on the discussion points.')
 
 for n_iter in range(num_iterations):
-# with concurrent.futures.ThreadPoolExecutor() as executor:
-#     concurrent.futures.wait([
-#         executor.submit(
-        run_meeting(
-        meeting_type="individual",
-        team_member=study_section_chair,  # PI resolves/merges
-        summaries=collaboration_summaries,
-        agenda=final_agenda,
-        agenda_questions= final_output_questions,
-        save_dir=discussions_phase_to_dir["chair_merge"],
-        save_name=f"final_{n_iter+1}",
-    #     pubmed_search = True,
-        temperature=CONSISTENT_TEMPERATURE,
-        num_rounds=num_rounds,
-    ) 
+    run_meeting(
+    meeting_type="individual",
+    team_member=study_section_chair,  # PI resolves/merges
+    summaries=collaboration_summaries,
+    agenda=final_agenda,
+    agenda_questions= final_output_questions,
+    save_dir=discussions_phase_to_dir["chair_merge"],
+    save_name=f"final_{n_iter+1}",
+#     pubmed_search = True,
+    temperature=CONSISTENT_TEMPERATURE,
+    num_rounds=num_rounds,
+    )
 
 
 print('######## study section chair has selected the final output ####### ')
-
 
 # --- Grant specification – merge ---
 final_output_summary = load_summaries(
     discussion_paths=list(discussions_phase_to_dir["chair_merge"].glob("final*.json"))
 )
-print(final_output_summary[0])
+
+print(f'Final Output Summary:')
+print(final_output_summary[-1])
 
